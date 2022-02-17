@@ -28,9 +28,9 @@ class Watchbill:
         self.assign_day_costs()  # build the list of day costs
         print(self.day_costs)
         # decide the maximum and minimum number of days a watchstander can stand
-        self.min_days = self.num_days // self.num_watchstanders
         self.model = cp_model.CpModel()
         self.shifts = {}
+        self.min_days = self.num_days // self.num_watchstanders
         if self.num_days % self.num_watchstanders == 0:
             self.max_days = self.min_days
         else:
@@ -138,8 +138,8 @@ class Watchbill:
                 elif self.locked_in_days[n][d]:
                     self.model.Add(self.shifts[(n, d)] == 1)
         # assign dummy variables.
-        worst_deal = self.model.NewIntVar(0, 300, 'worst_deal')
-        best_deal = self.model.NewIntVar(0, 300, 'best_deal')
+        worst_deal = self.model.NewIntVar(0, sum(self.day_costs), 'worst_deal')
+        best_deal = self.model.NewIntVar(0, sum(self.day_costs), 'best_deal')
         for n, name in enumerate(self.all_watchstanders):
             if not self.is_assigned(n):
                 self.model.Add(worst_deal >= sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days))
