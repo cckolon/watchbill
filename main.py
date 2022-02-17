@@ -146,9 +146,13 @@ class Watchbill:
         for n, name in enumerate(self.all_watchstanders):
             if not self.is_assigned(n):
                 self.model.Add(best_deal <= sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days))
-        # The objective function. We want to minimize the difference between worst_deal and best_deal.
-        deal_spread = worst_deal-best_deal
-        self.model.Minimize(deal_spread)
+        mean_deviations = []
+        for n, name in enumerate(self.all_watchstanders):
+            dev = self.model.NewIntVar(0, sum(self.day_costs), 'deviation_'+name)
+            self.model.Add(self.num_watchstanders*(dev - sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days)) >= - sum(self.day_costs))
+            self.model.Add(self.num_watchstanders*(dev + sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days)) >= sum(self.day_costs))
+            mean_deviations.append(dev)
+        self.model.Minimize(sum(mean_deviations))
 
     def solve_model(self):
         """
@@ -173,29 +177,6 @@ class Watchbill:
             else:
                 self.show_solution()
                 raise Exception('Unable to solve model. Check the schedule constraints.')
-
-    def find_assignments(self):
-        """
-        Build and solve the model, and return:
-        solver - an ortools solver with the optimal assignments
-        good_assignments - a list of the watchstander indices with the lowest badness
-        bad_assignments - a list of the watchstander indices with the highest badness
-        variance(badness_list) - the variance of all the badness scores assigned by the model
-        """
-        self.build_model()
-        solver = self.solve_model()
-        # initialize list of indices of watchstanders not assigned yet, and the badness assigned to each by solver
-        badness_index = []
-        badness_list = []
-        for n, name in enumerate(self.all_watchstanders):
-            # record the index and badness of watchstanders not assigned yet
-            if not self.is_assigned(n):
-                badness_index.append(n)
-                badness_list.append(solver.Value(sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days)))
-        # collect the best and worst assignments
-        good_assignments = [badness_index[i] for i, x in enumerate(badness_list) if x == min(badness_list)]
-        bad_assignments = [badness_index[i] for i, x in enumerate(badness_list) if x == max(badness_list)]
-        return solver, good_assignments, bad_assignments, variance(badness_list) if len(badness_list) > 1 else 0
 
     def assign(self, solver, watchstander):
         """
@@ -222,47 +203,13 @@ class Watchbill:
         """
         return any(self.final_schedule[watchstander][d] for d in self.all_days)
 
-    def iterate_assignment(self):
-        """
-        Assigns the best and worst assignments to a watchbill, in a way which minimizes the resulting badness variance.
-        """
-        solver, good_assignments, bad_assignments, badness_variance = self.find_assignments()
-        # check if both lists are populated (maybe everyone's already assigned)
-        if good_assignments and bad_assignments:
-            # if all remaining watchstanders have the same badness, assign them all.
-            if good_assignments == bad_assignments:
-                for i in good_assignments:
-                    self.assign(solver, i)
-            # otherwise, the schedule is not yet fair.
-            else:
-                for assignments in [good_assignments, bad_assignments]:
-                    # if there is one watchstander with maximum or minimum badness, assign that watchstander.
-                    if len(assignments) == 1:
-                        self.assign(solver, assignments[0])
-                    # otherwise, we need to determine which watchstander is the best to assign.
-                    # for each watchstander, we assign them, and solve the model
-                    # whichever watchstander yields the min variance, we assign. That will lead to the fairest schedule.
-                    else:
-                        min_variance = float('inf')
-                        selected_watchstander = None
-                        for i in assignments:
-                            self.assign(solver, i)
-                            _, _, _, test_variance = self.find_assignments()
-                            if test_variance < min_variance:
-                                selected_watchstander = i
-                                min_variance = test_variance
-                            # if multiple watchstanders lead to a min variance, select them at random
-                            elif test_variance == min_variance:
-                                if randint(0, 1) == 1:
-                                    selected_watchstander = i
-                            self.unassign(i)
-                        self.assign(solver, selected_watchstander)
-            self.show_solution()
-
     def develop(self):
         """Find an optimal watchbill of final assignments."""
-        for i in range(self.num_watchstanders):
-            self.iterate_assignment()
+        self.build_model()
+        solver = self.solve_model()
+        for n, name in enumerate(self.all_watchstanders):
+            self.assign(solver,n)
+        self.show_solution()
 
     def badness_list(self):
         """Returns the badness of each watchstander on the final watchbill."""
@@ -304,7 +251,7 @@ class Watchbill:
 
             print("  " + str(sum(self.day_costs[d] * self.final_schedule[n][d] for d in self.all_days)))
 
-
+'''
 schedule_conflict_list = [['Silver', date(2022, 2, 1), date(2022, 2, 4)],
                           ['Silver', date(2022, 2, 7), date(2022, 2, 11)],
                           ['Silver', date(2022, 2, 14), date(2022, 2, 18)],
@@ -319,10 +266,23 @@ schedule_conflict_list = [['Silver', date(2022, 2, 1), date(2022, 2, 4)],
                           ['Mikalchus', date(2022, 2, 1), date(2022, 2, 3)],
                           ['Baumann', date(2022, 2, 1), date(2022, 2, 3)],
                           ['Skoric', date(2022, 2, 1), date(2022, 2, 18)]]
+'''
 
-edolist = ['Kolon', 'Arnold', 'Silver', 'Ross', 'Mikalchus', 'Skoric', 'Furlong', 'Baumann']
 
-njy = Watchbill(date(2022, 2, 1), date(2022, 2, 28), 3, edolist)
+edolist = ['Kolon', 'Arnold', 'Silver', 'Mikalchus', 'Skoric', 'Furlong', 'Baumann']
+schedule_conflict_list = [['Skoric', date(2022,3,1), date(2022,3,3)],
+                          ['Skoric', date(2022,3,18), date(2022,3,22)],
+                          ['Skoric', date(2022,3,28)],
+                          ['Silver', date(2022,3,1), date(2022,3, 6)],
+                          ['Mikalchus', date(2022,3,5), date(2022,3,31)],
+                          ['Furlong', date(2022,3,1), date(2022,3,4)],
+                          ['Furlong', date(2022,3,7), date(2022,3,11)],
+                          ['Furlong', date(2022,3,14), date(2022,3,18)],
+                          ['Furlong', date(2022,3,21), date(2022,3,25)],
+                          ['Furlong', date(2022,3,28), date(2022,3,31)],
+                          ['Baumann', date(2022,3,1), date(2022,3,9)],
+                          ['Kolon', date(2022,3,6), date(2022,3,10)]]
+njy = Watchbill(date(2022, 3, 1), date(2022, 3, 31), 2, edolist)
 
 for c in schedule_conflict_list:
     njy.parse_schedule_conflict(c)
