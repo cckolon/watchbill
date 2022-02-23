@@ -10,7 +10,7 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 
 
 class Watchbill:
-    def __init__(self, start_date, end_date, days_off_between_duty, all_watchstanders):
+    def __init__(self, start_date, end_date, days_off_between_duty, all_watchstanders, holidays=[]):
         self.start_date = start_date
         self.end_date = end_date
         self.days_off_between_duty = days_off_between_duty  # minimum number of days off between duty days
@@ -25,7 +25,7 @@ class Watchbill:
         self.locked_in_days = [[False for _ in range(self.num_days)] for _ in range(self.num_watchstanders)]
         self.final_schedule = [[False for _ in range(self.num_days)] for _ in range(self.num_watchstanders)]
         self.day_costs = [0 for _ in range(self.num_days)]
-        self.assign_day_costs()  # build the list of day costs
+        self.assign_day_costs(holidays)  # build the list of day costs; holidays is a list of extra holidays
         print(self.day_costs)
         # decide the maximum and minimum number of days a watchstander can stand
         self.model = cp_model.CpModel()
@@ -36,7 +36,7 @@ class Watchbill:
         else:
             self.max_days = self.min_days + 1
 
-    def assign_day_costs(self):
+    def assign_day_costs(self, extra_holidays):
         """Assign costs to each day based on how bad they are."""
         saturday_value = 7  # the badness of a day off followed by another day off
         sunday_value = 6    # the badness of a day off followed by a workday
@@ -52,6 +52,8 @@ class Watchbill:
         cal = USFederalHolidayCalendar()
         holiday_datetimes = cal.holidays(start=str(self.start_date), end=str(self.end_date)).to_pydatetime()
         holidays = [(i.date()-self.start_date).days for i in holiday_datetimes]
+        for i in extra_holidays:
+            holidays.append((i-self.start_date).days)
         for i in holidays:
             day_off_set.add(i)
         # assign each day in num_days
@@ -98,7 +100,7 @@ class Watchbill:
         """
         self.parse_list(locked_day, self.locked_in_days)
 
-    def build_model(self):
+    def build_model(self, minimize_spread, min_spread=0):
         """
         Set up the optimization model using the cp_model library from ortools
         """
@@ -146,15 +148,24 @@ class Watchbill:
         for n, name in enumerate(self.all_watchstanders):
             if not self.is_assigned(n):
                 self.model.Add(best_deal <= sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days))
+        # calculate the mean deviation for each watchstander
         mean_deviations = []
         for n, name in enumerate(self.all_watchstanders):
             dev = self.model.NewIntVar(0, sum(self.day_costs), 'deviation_'+name)
             self.model.Add(self.num_watchstanders*(dev - sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days)) >= - sum(self.day_costs))
             self.model.Add(self.num_watchstanders*(dev + sum(self.day_costs[d] * self.shifts[(n, d)] for d in self.all_days)) >= sum(self.day_costs))
             mean_deviations.append(dev)
-        self.model.Minimize(sum(mean_deviations))
+        # if this is the initial run to determine the minimum spread, minimize that
+        if minimize_spread:
+            self.model.Minimize(worst_deal-best_deal)
+        # if this is the final run to determine the assignments, minimize the sum of mean_deviations
+        # this is equivalent to minimizing the MAD
+        # and assign min spread as a constraint
+        else:
+            self.model.Add(worst_deal-best_deal <= int(min_spread))
+            self.model.Minimize(sum(mean_deviations))
 
-    def solve_model(self):
+    def solve_model(self, minimize_spread, min_spread=0):
         """
         Use cp_tools to solve the model.
         """
@@ -171,8 +182,8 @@ class Watchbill:
             if self.min_days > 0:
                 self.max_days = self.max_days + 1
                 self.min_days = self.min_days - 1
-                self.build_model()
-                return self.solve_model()
+                self.build_model(minimize_spread, min_spread=min_spread)
+                return self.solve_model(minimize_spread, min_spread=min_spread)
             # something else is wrong
             else:
                 self.show_solution()
@@ -205,10 +216,18 @@ class Watchbill:
 
     def develop(self):
         """Find an optimal watchbill of final assignments."""
-        self.build_model()
-        solver = self.solve_model()
+        # build and solve a model minimizing deal_spread
+        self.build_model(True)
+        solver = self.solve_model(True)
+        # ms is the minimum deal_spread of the above model
+        ms = solver.ObjectiveValue()
+        # build and solve a model minimizing MAD
+        # deal_spread <= ms is a constraint
+        self.build_model(False, min_spread=ms)
+        solver = self.solve_model(False, min_spread=ms)
+        # assign all watchstanders and display the result
         for n, name in enumerate(self.all_watchstanders):
-            self.assign(solver,n)
+            self.assign(solver, n)
         self.show_solution()
 
     def badness_list(self):
@@ -268,21 +287,33 @@ schedule_conflict_list = [['Silver', date(2022, 2, 1), date(2022, 2, 4)],
                           ['Skoric', date(2022, 2, 1), date(2022, 2, 18)]]
 '''
 
-
-edolist = ['Kolon', 'Arnold', 'Silver', 'Mikalchus', 'Skoric', 'Furlong', 'Baumann']
-schedule_conflict_list = [['Skoric', date(2022,3,1), date(2022,3,3)],
-                          ['Skoric', date(2022,3,18), date(2022,3,22)],
-                          ['Skoric', date(2022,3,28)],
-                          ['Silver', date(2022,3,1), date(2022,3, 6)],
-                          ['Mikalchus', date(2022,3,5), date(2022,3,31)],
-                          ['Furlong', date(2022,3,1), date(2022,3,4)],
-                          ['Furlong', date(2022,3,7), date(2022,3,11)],
+'''
+edolist = ['Kolon', 'Arnold', 'Silver', 'Mikalchus', 'Skoric', 'Furlong', 'Baumann', 'McCoy']
+schedule_conflict_list = [['Skoric', date(2022, 3, 1), date(2022, 3, 3)],
+                          ['Skoric', date(2022, 3, 18), date(2022, 3, 22)],
+                          ['Skoric', date(2022, 3, 28)],
+                          ['Silver', date(2022, 3, 1), date(2022, 3, 6)],
+                          ['Mikalchus', date(2022, 3, 5), date(2022, 3, 31)],
+                          ['Furlong', date(2022, 3, 1), date(2022, 3, 4)],
+                          ['Furlong', date(2022,3,7), date(2022, 3, 11)],
                           ['Furlong', date(2022,3,14), date(2022,3,18)],
                           ['Furlong', date(2022,3,21), date(2022,3,25)],
                           ['Furlong', date(2022,3,28), date(2022,3,31)],
                           ['Baumann', date(2022,3,1), date(2022,3,9)],
-                          ['Kolon', date(2022,3,6), date(2022,3,10)]]
-njy = Watchbill(date(2022, 3, 1), date(2022, 3, 31), 2, edolist)
+                          ['Kolon', date(2022,3,6), date(2022,3,10)],
+                          ['Silver', date(2022,3,9), date(2022,3,15)],
+                          ['McCoy', date(2022, 3, 1), date(2022, 3, 2)],
+                          ['McCoy', date(2022, 3, 8), date(2022, 3, 9)],
+                          ['McCoy', date(2022, 3, 15), date(2022, 3, 16)],
+                          ['McCoy', date(2022, 3, 22), date(2022, 3, 23)],
+                          ['McCoy', date(2022, 3, 29), date(2022, 3, 30)],
+                          ['Arnold', date(2022, 3, 1)],
+                          ['Arnold', date(2022, 3, 8)],
+                          ['Arnold', date(2022, 3, 15)],
+                          ['Arnold', date(2022, 3, 22)],
+                          ['Arnold', date(2022, 3, 29)],
+                          ]
+njy = Watchbill(date(2022, 3, 1), date(2022, 3, 31), 4, edolist, [date(2022, 3, 17), date(2022, 3, 18)])
 
 for c in schedule_conflict_list:
     njy.parse_schedule_conflict(c)
@@ -290,9 +321,19 @@ for c in schedule_conflict_list:
 njy.develop()
 
 '''
+'''
 edolist = range(7)
 njy = Watchbill(date(2022, 2, 1), date(2022, 3, 1), 5, edolist)
 njy.schedule_conflicts = [[True if randint(0, 3) == 0 else False for i in range(njy.num_days)]
                           for j in range(njy.num_watchstanders)]
 njy.develop()
 '''
+
+edolist = ['Alice', 'Bob', 'Charlie']
+njy = Watchbill(date(2022,3,2), date(2022,3,5),1,edolist)
+schedule_conflict_list = [['Bob', date(2022, 3, 3)],
+                          ['Alice', date(2022, 3, 5)]]
+for c in schedule_conflict_list:
+    njy.parse_schedule_conflict(c)
+
+njy.develop()
